@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>nginx-rtmp Streaming Server Guide</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-size: 12pt;
+            line-height: 1.4;
+            color: #333;
+            max-width: 210mm;
+            margin: 0 auto;
+            padding: 15mm;
+        }
+        h1 {
+            font-size: 20pt;
+            color: #1a5f2a;
+            border-bottom: 2px solid #1a5f2a;
+            padding-bottom: 5px;
+            margin-bottom: 15px;
+        }
+        h2 {
+            font-size: 14pt;
+            color: #2d7a3e;
+            margin-top: 18px;
+            margin-bottom: 8px;
+            border-bottom: 1px solid #ddd;
+            padding-bottom: 3px;
+        }
+        h3 {
+            font-size: 12pt;
+            color: #444;
+            margin-top: 12px;
+            margin-bottom: 5px;
+        }
+        p {
+            margin-bottom: 8px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 8px 0;
+            font-size: 10pt;
+        }
+        th, td {
+            border: 1px solid #ccc;
+            padding: 5px 8px;
+            text-align: left;
+        }
+        th {
+            background: #f0f7f1;
+            font-weight: 600;
+        }
+        tr:nth-child(even) {
+            background: #fafafa;
+        }
+        pre {
+            background: #f5f5f5;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            padding: 8px 10px;
+            overflow-x: auto;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 9pt;
+            line-height: 1.3;
+            margin: 8px 0;
+        }
+        code {
+            background: #f0f0f0;
+            padding: 1px 4px;
+            border-radius: 2px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 10pt;
+        }
+        pre code {
+            background: none;
+            padding: 0;
+        }
+        .diagram {
+            background: #f9f9f9;
+            border: 1px solid #ddd;
+            padding: 10px;
+            font-family: 'Consolas', monospace;
+            font-size: 9pt;
+            white-space: pre;
+            overflow-x: auto;
+            margin: 8px 0;
+        }
+        ul, ol {
+            margin: 8px 0 8px 20px;
+        }
+        li {
+            margin-bottom: 3px;
+        }
+        .toc {
+            background: #f8fdf9;
+            border: 1px solid #c8e6c9;
+            padding: 12px 15px;
+            margin-bottom: 15px;
+            border-radius: 4px;
+        }
+        .toc-title {
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #2d7a3e;
+        }
+        .toc-list {
+            column-count: 2;
+            column-gap: 20px;
+            font-size: 10pt;
+        }
+        .toc-list li {
+            margin-bottom: 2px;
+        }
+        .note {
+            background: #fff8e1;
+            border-left: 3px solid #ffc107;
+            padding: 8px 12px;
+            margin: 8px 0;
+            font-size: 10pt;
+        }
+        .cols-2 {
+            display: flex;
+            gap: 15px;
+        }
+        .cols-2 > div {
+            flex: 1;
+        }
+        .page-break {
+            page-break-before: always;
+        }
+        @media print {
+            body {
+                padding: 10mm;
+            }
+            pre {
+                white-space: pre-wrap;
+                word-wrap: break-word;
+            }
+            .page-break {
+                page-break-before: always;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<h1>nginx-rtmp Streaming Server Implementation Guide</h1>
+
+<div class="toc">
+    <div class="toc-title">Table of Contents</div>
+    <ol class="toc-list">
+        <li>Overview & Architecture</li>
+        <li>Installation</li>
+        <li>Basic Configuration</li>
+        <li>Testing the Stream</li>
+        <li>HLS Player Setup</li>
+        <li>Authentication</li>
+        <li>Recording Streams</li>
+        <li>Multiple Bitrates</li>
+        <li>Monitoring & Statistics</li>
+        <li>Troubleshooting</li>
+        <li>Production Checklist</li>
+        <li>Quick Reference</li>
+    </ol>
+</div>
+
+<h2>1. Overview & Architecture</h2>
+
+<p><strong>nginx-rtmp</strong> is an nginx module that adds RTMP support for live video streaming.</p>
+
+<table>
+    <tr><th>Protocol</th><th>Use Case</th><th>Latency</th><th>Browser Support</th></tr>
+    <tr><td>RTMP</td><td>Ingest (broadcaster → server)</td><td>Low (~2-5s)</td><td>Flash only</td></tr>
+    <tr><td>HLS</td><td>Playback (server → viewer)</td><td>Medium (~10-30s)</td><td>All browsers</td></tr>
+    <tr><td>DASH</td><td>Playback (server → viewer)</td><td>Medium (~10-30s)</td><td>Most browsers</td></tr>
+</table>
+
+<div class="diagram">┌─────────────┐      RTMP       ┌─────────────┐       HLS        ┌─────────────┐
+│ Broadcaster │ ──────────────▶ │ nginx-rtmp  │ ───────────────▶ │   Viewers   │
+│ (OBS Studio)│    port 1935    │   Server    │    port 8080     │  (Browser)  │
+└─────────────┘                 └─────────────┘                  └─────────────┘</div>
+
+<h2>2. Installation</h2>
+
+<h3>Option A: Ubuntu/Debian</h3>
+<pre><code>sudo apt update
+sudo apt install nginx libnginx-mod-rtmp
+nginx -V 2>&1 | grep rtmp   # Verify installation</code></pre>
+
+<h3>Option B: macOS (Homebrew)</h3>
+<pre><code>brew tap denji/nginx
+brew install nginx-full --with-rtmp-module</code></pre>
+
+<h3>Option C: Docker (Easiest)</h3>
+<pre><code>docker run -d -p 1935:1935 -p 8080:8080 alfg/nginx-rtmp</code></pre>
+
+<h3>Directory Setup</h3>
+<pre><code>sudo mkdir -p /tmp/hls && sudo chmod 755 /tmp/hls
+sudo mkdir -p /var/recordings && sudo chown www-data:www-data /var/recordings</code></pre>
+
+<h2>3. Basic Configuration</h2>
+
+<p>Edit <code>/etc/nginx/nginx.conf</code>:</p>
+
+<pre><code>worker_processes auto;
+events { worker_connections 1024; }
+
+rtmp {
+    server {
+        listen 1935;
+        chunk_size 4096;
+
+        application live {
+            live on;
+            record off;
+
+            hls on;
+            hls_path /tmp/hls;
+            hls_fragment 3;
+            hls_playlist_length 60;
+
+            deny play all;
+        }
+    }
+}
+
+http {
+    sendfile off;
+    tcp_nopush on;
+    directio 512;
+    default_type application/octet-stream;
+
+    server {
+        listen 8080;
+
+        location / {
+            root /var/www/html;
+            index index.html;
+        }
+
+        location /hls {
+            types {
+                application/vnd.apple.mpegurl m3u8;
+                video/mp2t ts;
+            }
+            root /tmp;
+            add_header Cache-Control no-cache;
+            add_header Access-Control-Allow-Origin *;
+        }
+    }
+}</code></pre>
+
+<p><strong>Start nginx:</strong></p>
+<pre><code>sudo nginx -t          # Test configuration
+sudo nginx             # Start
+sudo nginx -s reload   # Reload if running</code></pre>
+
+<div class="page-break"></div>
+
+<h2>4. Testing the Stream</h2>
+
+<h3>OBS Studio Settings</h3>
+<table>
+    <tr><th>Setting</th><th>Value</th></tr>
+    <tr><td>Service</td><td>Custom...</td></tr>
+    <tr><td>Server</td><td><code>rtmp://localhost/live</code></td></tr>
+    <tr><td>Stream Key</td><td><code>test</code> (or any name)</td></tr>
+</table>
+
+<h3>Verify & Watch</h3>
+<pre><code># Check HLS files are created
+ls -la /tmp/hls/
+
+# Watch with VLC
+vlc http://localhost:8080/hls/test.m3u8
+
+# Test with FFmpeg (no OBS needed)
+ffmpeg -re -f lavfi -i testsrc=size=1280x720:rate=30 \
+    -f lavfi -i sine=frequency=1000 \
+    -c:v libx264 -preset ultrafast -b:v 1500k \
+    -c:a aac -b:a 128k -f flv rtmp://localhost/live/test</code></pre>
+
+<h2>5. HLS Player Setup</h2>
+
+<p>Create <code>/var/www/html/player.html</code>:</p>
+
+<pre><code>&lt;!DOCTYPE html&gt;
+&lt;html&gt;
+&lt;head&gt;
+    &lt;title&gt;Live Stream&lt;/title&gt;
+    &lt;script src="https://cdn.jsdelivr.net/npm/hls.js@latest"&gt;&lt;/script&gt;
+    &lt;style&gt;
+        video { width: 100%; max-width: 800px; }
+    &lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+    &lt;video id="video" controls&gt;&lt;/video&gt;
+    &lt;script&gt;
+        const video = document.getElementById('video');
+        const url = '/hls/test.m3u8';
+
+        if (Hls.isSupported()) {
+            const hls = new Hls();
+            hls.loadSource(url);
+            hls.attachMedia(video);
+            hls.on(Hls.Events.MANIFEST_PARSED, () =&gt; video.play());
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            video.src = url;
+        }
+    &lt;/script&gt;
+&lt;/body&gt;
+&lt;/html&gt;</code></pre>
+
+<h2>6. Authentication</h2>
+
+<h3>nginx Configuration</h3>
+<pre><code>application live {
+    live on;
+    on_publish http://localhost:3000/api/stream/auth;
+    on_publish_done http://localhost:3000/api/stream/end;
+    on_play http://localhost:3000/api/stream/play;        # Optional
+    hls on;
+    hls_path /tmp/hls;
+}</code></pre>
+
+<h3>What nginx Sends (POST form data)</h3>
+<table>
+    <tr><th>Field</th><th>Description</th><th>Example</th></tr>
+    <tr><td>app</td><td>Application name</td><td>live</td></tr>
+    <tr><td>name</td><td>Stream key</td><td>abc123xyz</td></tr>
+    <tr><td>addr</td><td>Client IP</td><td>192.168.1.100</td></tr>
+    <tr><td>tcurl</td><td>Full RTMP URL</td><td>rtmp://server/live</td></tr>
+</table>
+
+<p><strong>Response:</strong> Return <code>2xx</code> to allow, <code>4xx/5xx</code> to deny.</p>
+
+<div class="page-break"></div>
+
+<h3>Node.js Auth Server</h3>
+<pre><code>const express = require('express');
+const app = express();
+app.use(express.urlencoded({ extended: true }));
+
+const streamKeys = new Map([
+    ['sk_abc123', { userId: 1, username: 'streamer1' }],
+]);
+const activeStreams = new Map();
+
+app.post('/api/stream/auth', (req, res) => {
+    const { name: streamKey, addr: clientIp } = req.body;
+    const keyData = streamKeys.get(streamKey);
+
+    if (!keyData) {
+        console.log(`Rejected: invalid key ${streamKey}`);
+        return res.status(403).send('Invalid stream key');
+    }
+
+    activeStreams.set(streamKey, { ...keyData, startedAt: new Date(), clientIp });
+    console.log(`Approved: ${keyData.username} started streaming`);
+    res.status(200).send('OK');
+});
+
+app.post('/api/stream/end', (req, res) => {
+    const { name: streamKey } = req.body;
+    activeStreams.delete(streamKey);
+    res.status(200).send('OK');
+});
+
+app.get('/api/streams', (req, res) => {
+    res.json(Array.from(activeStreams.entries()));
+});
+
+app.listen(3000, () => console.log('Auth server on port 3000'));</code></pre>
+
+<h2>7. Recording Streams</h2>
+
+<pre><code>application live {
+    live on;
+
+    record all;                              # Record audio + video
+    record_path /var/recordings;             # Save location
+    record_suffix -%Y%m%d-%H%M%S.flv;       # Filename format
+    record_unique on;                        # Prevent overwrite
+    record_max_size 1000M;                   # Max file size
+
+    # Post-processing hook
+    exec_record_done ffmpeg -i $path -c copy /var/recordings/$basename.mp4;
+}</code></pre>
+
+<table>
+    <tr><th>Directive</th><th>Description</th></tr>
+    <tr><td>record off/all/audio/video</td><td>What to record</td></tr>
+    <tr><td>record_path</td><td>Directory for recordings</td></tr>
+    <tr><td>record_suffix</td><td>Filename suffix (strftime supported)</td></tr>
+    <tr><td>record_max_size</td><td>Max size before new file</td></tr>
+    <tr><td>record_interval</td><td>Create new file after interval</td></tr>
+</table>
+
+<h2>8. Multiple Bitrates (Adaptive Streaming)</h2>
+
+<pre><code>application live {
+    live on;
+    exec_push ffmpeg -i rtmp://localhost/live/$name
+        -c:v libx264 -preset veryfast -b:v 3000k -s 1920x1080 -c:a aac -b:a 128k -f flv rtmp://localhost/show/${name}_1080p
+        -c:v libx264 -preset veryfast -b:v 1500k -s 1280x720 -c:a aac -b:a 128k -f flv rtmp://localhost/show/${name}_720p
+        -c:v libx264 -preset veryfast -b:v 800k -s 854x480 -c:a aac -b:a 96k -f flv rtmp://localhost/show/${name}_480p;
+}
+
+application show {
+    live on;
+    hls on;
+    hls_path /tmp/hls/show;
+    hls_fragment 3s;
+    hls_nested on;
+    hls_variant _1080p BANDWIDTH=3128000,RESOLUTION=1920x1080;
+    hls_variant _720p BANDWIDTH=1628000,RESOLUTION=1280x720;
+    hls_variant _480p BANDWIDTH=896000,RESOLUTION=854x480;
+}</code></pre>
+
+<div class="page-break"></div>
+
+<h2>9. Monitoring & Statistics</h2>
+
+<pre><code>http {
+    server {
+        listen 8080;
+
+        location /stat {
+            rtmp_stat all;
+            rtmp_stat_stylesheet stat.xsl;
+        }
+
+        location /control {
+            rtmp_control all;
+            allow 127.0.0.1;
+            deny all;
+        }
+    }
+}</code></pre>
+
+<p><strong>View stats:</strong> <code>http://localhost:8080/stat</code></p>
+
+<p><strong>Control commands:</strong></p>
+<pre><code>curl "http://localhost:8080/control/drop/client?app=live&name=streamkey"
+curl "http://localhost:8080/control/drop/publisher?app=live&name=streamkey"</code></pre>
+
+<h2>10. Troubleshooting</h2>
+
+<table>
+    <tr><th>Problem</th><th>Cause</th><th>Solution</th></tr>
+    <tr><td>Connection refused :1935</td><td>nginx not running</td><td><code>nginx -t</code> and <code>ps aux | grep nginx</code></td></tr>
+    <tr><td>No .m3u8 file</td><td>Stream not publishing</td><td>Check /tmp/hls permissions, wait 10s</td></tr>
+    <tr><td>CORS errors</td><td>Missing headers</td><td>Add <code>Access-Control-Allow-Origin *</code></td></tr>
+    <tr><td>No audio</td><td>Codec issue</td><td>Ensure OBS outputs AAC audio</td></tr>
+    <tr><td>High latency (&gt;30s)</td><td>Large HLS segments</td><td>Reduce <code>hls_fragment</code> to 2-3s</td></tr>
+</table>
+
+<p><strong>Debug commands:</strong></p>
+<pre><code>nginx -t                              # Test config
+tail -f /var/log/nginx/error.log      # View logs
+netstat -tlnp | grep 1935             # Check port
+ffprobe rtmp://localhost/live/test    # Test RTMP
+watch -n 1 "ls -la /tmp/hls/"         # Monitor HLS files</code></pre>
+
+<h2>11. Production Checklist</h2>
+
+<div class="cols-2">
+    <div>
+        <h3>Security</h3>
+        <ul>
+            <li>Enable publisher authentication</li>
+            <li>Restrict control API to localhost</li>
+            <li>Use HTTPS for HLS (reverse proxy)</li>
+            <li>Implement rate limiting</li>
+            <li>Set up firewall rules</li>
+        </ul>
+    </div>
+    <div>
+        <h3>Performance</h3>
+        <ul>
+            <li>Set <code>worker_processes auto</code></li>
+            <li>Use SSD for HLS segments</li>
+            <li>Configure appropriate fragment size</li>
+            <li>Use CDN for HLS delivery</li>
+            <li>Enable <code>sendfile off</code></li>
+        </ul>
+    </div>
+</div>
+
+<h2>12. Quick Reference</h2>
+
+<table>
+    <tr><th>Purpose</th><th>URL</th></tr>
+    <tr><td>RTMP Ingest</td><td><code>rtmp://server:1935/live/streamkey</code></td></tr>
+    <tr><td>HLS Playback</td><td><code>http://server:8080/hls/streamkey.m3u8</code></td></tr>
+    <tr><td>DASH Playback</td><td><code>http://server:8080/dash/streamkey.mpd</code></td></tr>
+    <tr><td>Statistics</td><td><code>http://server:8080/stat</code></td></tr>
+</table>
+
+<table>
+    <tr><th>Path</th><th>Purpose</th></tr>
+    <tr><td>/etc/nginx/nginx.conf</td><td>Main configuration</td></tr>
+    <tr><td>/tmp/hls</td><td>HLS segments</td></tr>
+    <tr><td>/var/recordings</td><td>Recorded streams</td></tr>
+    <tr><td>/var/log/nginx/</td><td>Log files</td></tr>
+</table>
+
+<div class="note">
+    <strong>Resources:</strong>
+    <a href="https://github.com/arut/nginx-rtmp-module">nginx-rtmp GitHub</a> |
+    <a href="https://github.com/video-dev/hls.js">HLS.js</a> |
+    <a href="https://obsproject.com/">OBS Studio</a>
+</div>
+
+</body>
+</html>
